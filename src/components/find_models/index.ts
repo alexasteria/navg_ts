@@ -1,0 +1,1 @@
+export {default as FinderGrid} from "./components/grid"

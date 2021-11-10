@@ -1,0 +1,150 @@
+image: andrdru/node-ci:0.1.1
+
+variables:
+  GIT_DEPTH: 10
+  GIT_STRATEGY: none
+  GIT_CLONE_PATH: "/cache/$CI_COMMIT_SHA"
+  SSHSTRING: "ssh -o StrictHostKeyChecking=no $SSHUSER@$SSHSERV -p $SSHPORT"
+  SSHSTRING_PROD: "ssh -o StrictHostKeyChecking=no $SSHUSER@$SSHSERV_PROD -p $SSHPORT"
+  SCPSTRING: "scp -o StrictHostKeyChecking=no -P $SSHPORT"
+  DEPLOY_PATH_APP: "$DEPLOY_PATH/appfront"
+  DEPLOY_PATH_APP_TMP: "${DEPLOY_PATH}/appfronttmp"
+  DEPLOY_PATH_APP_TMP2: "${DEPLOY_PATH}/appfronttmp2"
+
+.ssh_agent: &ssh_agent |
+  eval "$(ssh-agent -s)"
+  bash -c "ssh-add <(echo '$SSH_PRIVATE_KEY')"
+  mkdir -p ~/.ssh
+  echo -e "Host *\n\tStrictHostKeyChecking no\n\n" > ~/.ssh/config
+
+.build_template:
+  before_script: &before_script
+    - CI_PROJECT_DIR_TMP=$CI_PROJECT_DIR
+    - CI_PROJECT_DIR="/cache/$CI_COMMIT_SHA"
+    - cd $CI_PROJECT_DIR
+  after_script: &after_script
+    - CI_PROJECT_DIR=$CI_PROJECT_DIR_TMP
+  deploy_app: &deploy_app
+    - eval "$SSHSTRING 'rm -rf $DEPLOY_PATH_APP_TMP $DEPLOY_PATH_APP_TMP2'"
+    - eval "$SSHSTRING 'mkdir -p $DEPLOY_PATH_APP'"
+    - eval "$SSHSTRING 'mkdir -p $DEPLOY_PATH_APP_TMP'"
+    - eval "$SCPSTRING artifacts.tar $SSHUSER@$SSHSERV:$DEPLOY_PATH_APP_TMP"
+    - eval "$SSHSTRING 'cd $DEPLOY_PATH_APP_TMP && tar -xvf ${DEPLOY_PATH_APP_TMP}/artifacts.tar && rm artifacts.tar'"
+    - eval "$SSHSTRING 'mv $DEPLOY_PATH_APP $DEPLOY_PATH_APP_TMP2 && mv $DEPLOY_PATH_APP_TMP $DEPLOY_PATH_APP'"
+  restart_app: &restart_app
+    - eval "$SSHSTRING 'cd $DEPLOY_PATH && docker-compose restart frontnode1'"
+    - sleep 5
+    - eval "$SSHSTRING 'cd $DEPLOY_PATH && docker-compose restart frontnode2'"
+
+stages:
+  - build
+  - deploy_app
+  - clean
+
+cleanup_cache:
+  stage: clean
+  when: always
+  script:
+    - rm -rf /cache/"$CI_COMMIT_SHA"
+
+build_dev:
+  before_script: *before_script
+  after_script: *after_script
+  stage: build
+  when: manual
+  environment: dev
+  variables:
+    GIT_STRATEGY: fetch
+  script:
+    - npm ci --cache /nodecache
+    - npm install
+    - npm run build
+    - cd build && tar -cvf "${GIT_CLONE_PATH}/artifacts.tar" .
+  artifacts:
+    paths:
+      - artifacts.tar
+    expire_in: 1 week
+
+build_stage:
+  before_script: *before_script
+  after_script: *after_script
+  stage: build
+  when: manual
+  environment: stage
+  variables:
+    GIT_STRATEGY: fetch
+  script:
+    - npm ci --cache /nodecache
+    - npm install
+    - npm run build
+    - cd build && tar -cvf "${GIT_CLONE_PATH}/artifacts.tar" .
+  artifacts:
+    paths:
+      - artifacts.tar
+    expire_in: 1 week
+
+build_prod:
+  before_script: *before_script
+  after_script: *after_script
+  stage: build
+  when: manual
+  environment: prod
+  only:
+    refs:
+      - tags
+  variables:
+    GIT_STRATEGY: fetch
+  script:
+    - npm ci --cache /nodecache
+    - npm install
+    - npm run build
+    - cd build && tar -cvf "${GIT_CLONE_PATH}/artifacts.tar" .
+  artifacts:
+    paths:
+      - artifacts.tar
+    expire_in: 1 week
+
+dev_app:
+  stage: deploy_app
+  when: manual
+  environment: dev
+  script:
+    - *ssh_agent
+    - *deploy_app
+    - *restart_app
+  artifacts:
+    paths:
+      - artifacts.tar
+    expire_in: 1 week
+
+stage_app:
+  stage: deploy_app
+  when: manual
+  environment: stage
+  script:
+    - *ssh_agent
+    - *deploy_app
+    - *restart_app
+  artifacts:
+    paths:
+      - artifacts.tar
+    expire_in: 1 week
+
+prod_app:
+  stage: deploy_app
+  when: manual
+  environment: prod
+  only:
+    refs:
+      - tags
+  script:
+    - SSHSTRING=${SSHSTRING_PROD}
+    - SSHSERV=${SSHSERV_PROD}
+    - SSH_PRIVATE_KEY=${SSH_PRIVATE_KEY_PROD}
+    - *ssh_agent
+    - *deploy_app
+    - *restart_app
+  artifacts:
+    paths:
+      - artifacts.tar
+    expire_in: 1 week

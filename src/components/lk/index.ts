@@ -1,0 +1,1 @@
+export {default as LkMain} from "./components/main"
